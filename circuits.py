@@ -5,6 +5,14 @@ Created on Fri Feb 23 13:00:12 2024
 
 @author: yz23558
 """
+# no optimization, avg_peak_weight used elsewhere for SGD
+
+''' ideas:  
+1. plotting the amplitude distribution to show porter-thomas similarity
+2. plot the distance $||C_r-C_p^\dagger||$ between peaking and random circuit. 
+the operator norm between the entangling circuit and the peaking circuit. 
+higher operator norm means the two circuits are far away = taking a long path back instesad of taking the same path back the way you came / reversing parts of the circuit. 
+'''
 
 #%config InlineBackend.figure_formats = ['svg']
 import numpy as np
@@ -111,7 +119,6 @@ def qmps_f(L=16, in_depth=2, n_Qbit=3, data_type='float64', qmps_structure="bric
      elif qmps_structure=="pollmann":
       n_apply, list_u3=range_unitary_pollmann(psi, i, n_apply, list_u3, in_depth, n_Qbit,data_type,seed_val, Qubit_ara,uni_list= uni_list,rand =rand)
 
-
    return psi.astype_('complex128')#, list_u3
 
 def save_para(qmps_old): #transfer parameters between 2 qmps;
@@ -147,7 +154,6 @@ def average_peak_weight(L =10,depth = 100, shots=100):
         psi_2 = qmps_f(L, in_depth=depth, n_Qbit=L-1, qmps_structure="brickwall", canon="left",  n_q_mera=2, seed_init=10, internal_mera="brickwall")
         peak.append(max(abs((psi_2^all).data.reshape(2**L))**2))
     return np.mean(peak), np.std(peak)/np.sqrt(shots), np.max(peak)
-
 def negative_overlap(psi, target):
     return - abs((target.H & psi)^all) ** 2  # minus so as to minimize
 

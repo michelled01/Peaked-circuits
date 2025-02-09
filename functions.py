@@ -145,7 +145,6 @@ def qmps_f(L=16, in_depth=2, n_Qbit=3, data_type='float64', qmps_structure="bric
       n_apply, list_u3=range_unitary_pollmann(psi, i, n_apply, list_u3, in_depth, n_Qbit,data_type,seed_val, Qubit_ara,uni_list= uni_list,rand =rand)
      elif qmps_structure=="all_to_all":
       n_apply, list_u3=range_unitary_all_to_all(psi, i, n_apply, list_u3, in_depth, n_Qbit,data_type,seed_val, Qubit_ara,uni_list = uni_list,rand =rand,start_layer=start_layer)
-
    return psi.astype_('complex128')#, list_u3
 
 def save_para(qmps_old): #transfer parameters between 2 qmps;
