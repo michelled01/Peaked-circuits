@@ -9,6 +9,30 @@ import itertools
 import tensorflow as tf
 import numpy as np
 import random
+from numpy.linalg import qr
+
+np.random.seed(42)
+tf.random.set_seed(42)
+colors = ['#20786d', '#a16e1b']
+cc = itertools.cycle(colors)
+plt.rcParams["font.family"] = "Cambria"
+
+# From https://pennylane.ai/qml/demos/tutorial_haar_measure
+def qr_haar(N):
+    """Generate a Haar-random matrix with N modes using the QR decomposition."""
+    # Step 1
+    A, B = np.random.normal(size=(N, N)), np.random.normal(size=(N, N))
+    Z = A + 1j * B
+
+    # Step 2
+    Q, R = qr(Z)
+
+    # Step 3
+    Lambda = np.diag([R[i, i] / np.abs(R[i, i]) for i in range(N)])
+
+    # Step 4
+    return np.dot(Q, Lambda)
+
 
 def pollman_like(q, modes, depth, optimize=False, passive_sd=0.1):
     if modes==0: return
@@ -35,6 +59,7 @@ def pollman_like(q, modes, depth, optimize=False, passive_sd=0.1):
                     theta = np.random.uniform(0, 2 * np.pi)
                 Rgate(theta) | q[i]
     return params
+
 
 def brickwall_like(q, modes, depth, optimize=False, passive_sd=0.1):
     if modes==0: return
@@ -70,122 +95,184 @@ def brickwall_like(q, modes, depth, optimize=False, passive_sd=0.1):
             Rgate(theta) | q[modes-i]
     return params
 
+
 def boson_sampling(modes=5, depth=40, network="brickwall", sample=False):
     prog = sf.Program(modes)
     cutoff = modes + 1
     eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
 
     ket = np.zeros([cutoff]*modes, dtype=np.float32)
-    ket[(1,)*modes] = 1.0 # TODO: reduce system size (find smth convenient that works)
+    ket[(1,) + (0,)*(modes-1)] = 1.0 # 1 photon in the first mode so input state is (1,0,...0)
 
+    U = qr_haar(modes)
+    
     with prog.context as q:
         sf.ops.Ket(ket) | q
-        # for i in range(modes):
+        # for i in range(1):
         #     Fock(1) | q[i]
-        
-        if network == "brickwall":
-            brickwall_like(q, modes, depth)
-        else:
-            pollman_like(q, modes, depth)
+
+        Interferometer(U) | q
+
+        # if network == "brickwall":
+        #     brickwall_like(q, modes, depth)
+        # else:
+        #     pollman_like(q, modes, depth)
 
         if (sample == True):
             MeasureFock() | q
             eng = sf.Engine("fock", backend_options={"cutoff_dim": + 1})
-            results = eng.run(prog)
+            results = eng.run(prog, run_options={"shots": 5000})
             samples = results.samples
             return samples
-        
+
     results = eng.run(prog)
-    state = results.state
-    assert state.is_pure==True # local preparation will produce a non-pure state
-    return results.state
-    # TODO: update all other calls to boson_sampling
+    assert results.state.is_pure==True # local preparation will produce a non-pure state
+    return results.state, U
 
 
 def boson_sampling_with_SGD(modes=5, depth=10, network='brickwall',
-                       target_dist=None, steps=50, learning_rate=0.1):
-    # 0. set up the pqc (essentailly the same thing as rqc but with optimized params)
-    # 1. run the rqc
-    # 2. conduct gradient descent with target: rqc, psi: pqc
+                            target=None, U=None, steps=50, learning_rate=0.1):
 
-    # Initial parameters
+    fid_progress = []
     passive_sd = 0.1
     cutoff = modes + 1
-
+    depth = 1 #modes//2
+    t = (modes-1)
+     
     eng = sf.Engine(backend="tf", backend_options={"cutoff_dim": cutoff})
     prog = sf.Program(modes)
 
+    bs_theta = tf.random.normal(shape=[depth], stddev=passive_sd) 
+    bs_phi = tf.random.normal(shape=[depth], stddev=passive_sd)
+    weights = tf.convert_to_tensor([bs_theta, bs_phi]*t)
+    weights = tf.Variable(tf.transpose(weights))
+    
     tf_params = []
+    names = ["bs{}".format(i) for i in range(2*t)]
+    for i in range(depth):
+        tf_params_names = ["{}_{}".format(n, i) for n in names]
+        tf_params.append(prog.params(*tf_params_names))
+    tf_params = np.array(tf_params)
 
-    ket = np.zeros([cutoff]*modes, dtype=np.float32)
-    ket[(1,)*modes] = 1.0 # m photons in m modes
+    assert tf_params.shape == weights.shape # (depth, modes) <-- modes//2 gates so modes paramters
+
+    ket = np.zeros([cutoff] * modes, dtype=np.float32)
+    ket[(1,) + (0,)*(modes-1)] = 1.0
 
     with prog.context as q:
         sf.ops.Ket(ket) | q
-        
-        if network == "brickwall":
-            tf_params += brickwall_like(q, modes, depth, True, passive_sd)
-        else:
-            tf_params += pollman_like(q, modes, depth, True, passive_sd)
-        
-    prog.params(*[f"param_{i}" for i in range(len(tf_params))])
+
+        # trainable peaking layer
+        for l in range(depth):
+            for i in range(t):
+                BSgate(tf_params[l][2*i], tf_params[l][2*i+1]) | (q[0], q[i+1])
+
+    from tensorflow import keras
+    kl = keras.losses.KLDivergence()
     
     def cost(weights):
-
-        # TODO: imporove  this
-        mapping = {f"param_{i}": weights[i] for i in range(len(weights))}
-
+        mapping = {p.name: w for p, w in zip(tf_params.flatten(), tf.reshape(weights, [-1]))}
         state = eng.run(prog, args=mapping).state
+        ket = state.ket()
+        fidelity = tf.abs(tf.reduce_sum(tf.math.conj(ket) * target)) ** 2
 
-        probs = state.all_fock_probs()
-        
-        tv = tf.reduce_sum(tf.abs(probs-target_dist))/2 # 0 <= tv distance <= 1
-        
-        cost = tv # tf.abs(tv - 1) # similar to |<psi|U|0> - 1|
-
+        cost = tf.abs(tf.reduce_sum(tf.math.conj(ket) * target) - 1)
+        return cost, fidelity, ket
+        tv = tf.reduce_sum(tf.abs(probs-target))/2 # 0 <= tv distance <= 1
+        cost = tv #kl(probs,target)
         return cost
 
     opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
-    for step in range(steps):
+    for step in range(50):
         if eng.run_progs:
             eng.reset()
 
         with tf.GradientTape() as tape:
-            loss = cost(tf_params)
-            
-        gradients = tape.gradient(loss, tf_params)
-        opt.apply_gradients(zip(gradients, tf_params))
+            loss, fid, ket = cost(weights)
+        
+        fid_progress.append(fid.numpy())
 
-        cost_progress.append(loss.numpy())
-        print("Probability at step {}: {}".format(step, loss))
+        gradients = tape.gradient(loss, weights)
+        opt.apply_gradients(zip([gradients], [weights]))
 
-    optimized_parameters = [p.numpy() for p in tf_params]
+        print("Rep: {} Cost: {:.4f} Fidelity: {:.4f}".format(step, loss, fid))
 
-    return optimized_parameters, loss
+    # plt.figure()
+    # plt.plot(fid_progress)
+    # plt.ylabel("Fidelity")
+    # plt.xlabel("Step")
+    # plt.show()
+
+    optimized_parameters = np.array([p.numpy() for p in weights]).tolist()
+    return run_inverse(modes, U, t, optimized_parameters)
+     
+
+def run_inverse(modes, U, t, opt_params):
+    depth, _ = len(opt_params), len(opt_params[0])
+    cutoff = modes + 1
+    
+    final_prog = sf.Program(modes)
+    eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": cutoff})
+    
+    ket = np.zeros([cutoff] * modes, dtype=np.float32)
+    ket[(1,) + (0,)*(modes-1)] = 1.0
+    rev_params = []
+    for p in reversed(opt_params):
+        rev_params.append(p[::-1])
+    print(opt_params, rev_params)
+    with final_prog.context as q:
+        sf.ops.Ket(ket) | q
+        Interferometer(U) | q
+
+        for l in range(depth):
+            for i in range(t):
+                BSgate(rev_params[l][2*i+1], rev_params[l][2*i]).H | (q[0], q[t-i])
+    # final_prog.print()
+    state = eng.run(final_prog).state
+    return state
 
 
-def print_distribution(probs, modes, shots, depth, network):
-    # TODO: sort buckets by height (should be porter-thomas like)
-    # implement SGD based off prev work add a peaking scatterplotjust like in print_variation
-    x_axis = []
-    y_axis = []
+def order(probs):
+    state_probs = []
     for idx in np.ndindex(probs.shape):
         prob = probs[idx].item()
-        y_axis.append(prob)
-        x_axis.append(','.join(map(str, idx)) if prob > 0.01 else " ")
-        if prob > 1e-6:
-            print(f"State |{','.join(map(str, idx))}⟩: {prob:.6f}")
+        if prob > 0:
+            state = f"|{','.join(map(str, idx))}⟩"
+            state_probs.append((state, prob))
 
-    plt.figure(figsize=(10, 5))
-    plt.bar(x_axis, y_axis, color="blue", alpha=0.7)
-    plt.xticks(rotation=45, ha="right")
-    plt.xlabel("Fock State")
-    plt.ylabel("Probability")
-    plt.title(f"Boson Sampling Output Distribution ({shots} Trials)")
-    legend_text = f"Modes = {modes}, Depth={depth}, Network={network}"
-    plt.legend([legend_text], loc="upper right", frameon=True)
+    for state, prob in state_probs: 
+        print(f"State {state}: {prob:.6f}")
+    state_probs.sort(key=lambda x: x[1], reverse=True) # sort probabilities in descending order
+    return range(1, len(state_probs) + 1), tuple(zip(*state_probs))[1]
+
+def get_state_probs(qc, optimized=False):
+    if optimized:
+        probs = qc.all_fock_probs()
+    else:
+        probs = qc.all_fock_probs()
+    return probs
+
+def print_distribution(parameters):
+    ax = plt.figure(figsize=(5, 5)).gca()
+
+    l = []
+    rqc = boson_sampling(*parameters)
+    pqc = boson_sampling_with_SGD(*parameters, target=rqc[0].ket(), U=rqc[1])
+    r_axes = order(get_state_probs(rqc[0], optimized=False))
+    p_axes = order(get_state_probs(pqc, optimized=True))
+    idn = {'random layers': [r_axes, "o"], 'random + peaking layers': [p_axes, "^"]}
+    for n in idn.keys():
+        l.append(ax.scatter(*idn[n][0], color=next(cc), marker=idn[n][1]))
+
+    ax.set_xlabel("single-photon modes", fontsize=10)
+    ax.set_title("Output weight", fontsize=11)
+    legend = ax.legend(l, idn.keys(), loc="upper right", frameon=True)
+    
+    ax.grid(visible=False)
+    plt.tight_layout(pad=1)
     plt.show()
+    ax.add_artist(legend)
 
 
 def avg_peak_weight(modes=5, depth=40, shots=100, network="brickwall"):
@@ -248,40 +335,42 @@ def print_variation(parameters):
     ax = plt.figure(figsize=(5, 5)).gca()
     ax.xaxis.set_major_locator(MultipleLocator(5))
 
-    colors = ['#20786d', '#a16e1b']
-    cc = itertools.cycle(colors)
     l = []
     networks = ['brickwall', 'pollman']
     for n in networks:
         x_axis, y_axis = depth_variation(*parameters, n)
         l.append(ax.scatter(x_axis, y_axis, color=next(cc), marker='o')) # should b failrly random
 
-    ax.set_xlabel("random realizations", fontfamily='Cambria', fontsize=10)
-    ax.set_title("Distribution of peakedness", fontfamily='Cambria', fontsize=11)
-    legend = ax.legend(l, networks, loc="upper right", frameon=True, prop={'family': 'Cambria'})
+    ax.set_xlabel("random realizations", fontsize=10)
+    ax.set_title("Distribution of peakedness", fontsize=11)
+    legend = ax.legend(l, networks, loc="upper right", frameon=True)
     ax.grid(visible=False)
 
     plt.tight_layout(pad=1)
     plt.show()
     ax.add_artist(legend)
 
-plt.rcParams["font.family"] = "serif"
-plt.rcParams["font.sans-serif"] = ["Computer Modern Roman"]
-plt.style.use("default")
-cost_progress = []
+modes = 5
+depth = 40
+network="brickwall"
+print_distribution((modes, depth, network))
+
+
+
+"""
 
 # with open('outputfile', 'w') as sys.stdout:
-tf.get_logger().setLevel('ERROR')
 for seed in range(1):
     random.seed(42)
     modes=2
-    target_dist = boson_sampling(modes=modes, depth=40, network="pollman", sample=False).all_fock_probs()
-    target_dist = tf.convert_to_tensor(target_dist, dtype=tf.float32)
-    optimized_params, loss = boson_sampling_with_SGD(modes=modes, depth=1, network='pollman',
-                        target_dist=target_dist, steps=500, learning_rate=0.1)
+    target = boson_sampling(modes=modes, depth=40, network="pollman", sample=False)
+    target = tf.convert_to_tensor(target, dtype=tf.float32)
+    optimized_params, loss = boson_sampling_with_SGD(modes=modes, depth=10, network='pollman',
+                        target=target, steps=500, learning_rate=0.1)
     print(loss)
         # print("optimized params:", optimized_params)
 
 plt.plot(cost_progress)
 plt.xlabel("Step")
 plt.show()
+"""
