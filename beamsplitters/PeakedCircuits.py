@@ -1,19 +1,18 @@
 #!/usr/bin/env python
 # coding: utf-
 
-import strawberryfields as sf
-from strawberryfields.ops import *
+import itertools
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
-import itertools
-import tensorflow as tf
 import numpy as np
-import random
-from numpy.linalg import qr
+import seaborn as sns
+import strawberryfields as sf
+from strawberryfields.ops import *
+import tensorflow as tf
 
 np.random.seed(42)
 tf.random.set_seed(42)
-colors = ['#20786d', '#a16e1b']
+colors = sns.color_palette("rocket",6)
 cc = itertools.cycle(colors)
 plt.rcParams["font.family"] = "Cambria"
 
@@ -25,7 +24,7 @@ def qr_haar(N):
     Z = A + 1j * B
 
     # Step 2
-    Q, R = qr(Z)
+    Q, R = np.linalg.qr(Z)
 
     # Step 3
     Lambda = np.diag([R[i, i] / np.abs(R[i, i]) for i in range(N)])
@@ -129,15 +128,20 @@ def boson_sampling(modes=5, depth=40, network="brickwall", sample=False):
     assert results.state.is_pure==True # local preparation will produce a non-pure state
     return results.state, U
 
-
+'''
+another idea for sgd is to directly target the amplitude of the first mode (wlog bc U is haar-random).
+'''
 def boson_sampling_with_SGD(modes=5, depth=10, network='brickwall',
                             target=None, U=None, steps=50, learning_rate=0.1):
-
+    '''
+    sgd that learns the output distribution. inversions kick in around >= 4/5 * m peaking gates.
+    any less => tries to learn the entire distribution rather than peak the first weight.
+    '''
     fid_progress = []
     passive_sd = 0.1
     cutoff = modes + 1
     depth = 1 #modes//2
-    t = (modes-1)
+    t = 4*(modes-1)//5
      
     eng = sf.Engine(backend="tf", backend_options={"cutoff_dim": cutoff})
     prog = sf.Program(modes)
@@ -167,8 +171,8 @@ def boson_sampling_with_SGD(modes=5, depth=10, network='brickwall',
             for i in range(t):
                 BSgate(tf_params[l][2*i], tf_params[l][2*i+1]) | (q[0], q[i+1])
 
-    from tensorflow import keras
-    kl = keras.losses.KLDivergence()
+    # from tensorflow import keras
+    # kl = keras.losses.KLDivergence()
     
     def cost(weights):
         mapping = {p.name: w for p, w in zip(tf_params.flatten(), tf.reshape(weights, [-1]))}
@@ -178,9 +182,6 @@ def boson_sampling_with_SGD(modes=5, depth=10, network='brickwall',
 
         cost = tf.abs(tf.reduce_sum(tf.math.conj(ket) * target) - 1)
         return cost, fidelity, ket
-        tv = tf.reduce_sum(tf.abs(probs-target))/2 # 0 <= tv distance <= 1
-        cost = tv #kl(probs,target)
-        return cost
 
     opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
@@ -211,16 +212,16 @@ def boson_sampling_with_SGD(modes=5, depth=10, network='brickwall',
 def run_inverse(modes, U, t, opt_params):
     depth, _ = len(opt_params), len(opt_params[0])
     cutoff = modes + 1
-    
+
     final_prog = sf.Program(modes)
     eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": cutoff})
-    
+
     ket = np.zeros([cutoff] * modes, dtype=np.float32)
     ket[(1,) + (0,)*(modes-1)] = 1.0
     rev_params = []
     for p in reversed(opt_params):
         rev_params.append(p[::-1])
-    print(opt_params, rev_params)
+
     with final_prog.context as q:
         sf.ops.Ket(ket) | q
         Interferometer(U) | q
@@ -246,24 +247,16 @@ def order(probs):
     state_probs.sort(key=lambda x: x[1], reverse=True) # sort probabilities in descending order
     return range(1, len(state_probs) + 1), tuple(zip(*state_probs))[1]
 
-def get_state_probs(qc, optimized=False):
-    if optimized:
-        probs = qc.all_fock_probs()
-    else:
-        probs = qc.all_fock_probs()
-    return probs
-
-def print_distribution(parameters):
+def print_distributions(parameters):
     ax = plt.figure(figsize=(5, 5)).gca()
-
     l = []
     rqc = boson_sampling(*parameters)
     pqc = boson_sampling_with_SGD(*parameters, target=rqc[0].ket(), U=rqc[1])
-    r_axes = order(get_state_probs(rqc[0], optimized=False))
-    p_axes = order(get_state_probs(pqc, optimized=True))
+    r_axes = order(rqc[0].all_fock_probs())
+    p_axes = order(pqc.all_fock_probs())
     idn = {'random layers': [r_axes, "o"], 'random + peaking layers': [p_axes, "^"]}
-    for n in idn.keys():
-        l.append(ax.scatter(*idn[n][0], color=next(cc), marker=idn[n][1]))
+    for label, (data, marker) in idn.items():
+        l.append(ax.plot(*data, color=next(cc), marker=marker, label=label)[0])
 
     ax.set_xlabel("single-photon modes", fontsize=10)
     ax.set_title("Output weight", fontsize=11)
@@ -285,7 +278,6 @@ def avg_peak_weight(modes=5, depth=40, shots=100, network="brickwall"):
 
 
 def print_avg_peak_weight(peak, modes=5, depth=40, shots=100, network="brickwall"):
-    import seaborn as sns
     plt.figure(figsize=(8, 5))
     # kernel density estimate
     sns.kdeplot(peak, fill=True, color="blue")
@@ -353,7 +345,7 @@ def print_variation(parameters):
 modes = 5
 depth = 40
 network="brickwall"
-print_distribution((modes, depth, network))
+print_distributions((modes, depth, network))
 
 
 
