@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-
 
+import io
 import itertools
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
@@ -10,6 +11,7 @@ import seaborn as sns
 import strawberryfields as sf
 from strawberryfields.ops import *
 from strawberryfields.utils import operation
+import sys
 import tensorflow as tf
 
 np.random.seed(42)
@@ -67,9 +69,36 @@ class RandomCircuit:
                 for j in range(self.modes):
                     Rgate(self.params[i, j]) | q[j]
 
+    ### Utilities ###
+
+    def get_probs(self, state):
+        probs = []
+        for i in range(self.modes):
+            basis = tuple(1 if j == i else 0 for j in range(self.modes))
+            probs.append(state.fock_prob(basis))
+        return probs
+
+    def show_probs(self, state):
+        print(self.get_probs(state))
+
+    def dump_output(self, prog, state):
+        old_stdout = sys.stdout
+        sys.stdout = buffer = io.StringIO()
+        self.show_probs(state)
+        prog.print()
+        sys.stdout = old_stdout
+        lines = []
+        for line in buffer.getvalue().split("\n"):
+            if line.strip() == "" or "[0. 0. 0. 0. 0. 0.]" in line or "[1. 0. 0. 0. 0. 0.]" in line:
+                continue
+            lines.append(line)
+        filtered_output = "\n".join(lines)
+        with open("outfile.txt", "a") as f:
+            f.write(filtered_output)
+
     ### Main Sampling Experiments ###
 
-    def boson_sampling(self, sample=False):
+    def boson_sampling(self, theshold, sample=False):
         prog = sf.Program(modes)
         cutoff = modes + 1
         eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
@@ -82,16 +111,15 @@ class RandomCircuit:
             self.apply_layer(q)
             if (sample == True):
                 MeasureFock() | q
-                eng = sf.Engine("fock", backend_options={"cutoff_dim": + 1})
+                eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
                 results = eng.run(prog, run_options={"shots": 5000})
                 samples = results.samples
                 return samples
-
         results = eng.run(prog)
-        assert results.state.is_pure==True
-        # prog.print()
-        return results.state
-
+        state = results.state
+        if max(self.get_probs(state)) > theshold:
+            self.dump_output(prog, state)
+        return state
 
     def boson_sampling_with_SGD(self, target=None, T=None):
         fid_progress = []
@@ -171,7 +199,6 @@ class RandomCircuit:
         optimized_parameters = np.array([p.numpy() for p in weights]).tolist()
         return self.run_circuit(t, optimized_parameters)
 
-
     def run_circuit(self, t, opt_params):
         layers, _ = len(opt_params), len(opt_params[0])
         cutoff = self.modes + 1
@@ -206,29 +233,14 @@ class RandomCircuit:
         return state
 
 
-def get_probs(modes, state):
-    probs = []
-    for i in range(modes):
-        basis = tuple(1 if j == i else 0 for j in range(modes))
-        probs.append(state.fock_prob(basis))
-    return probs
-
-def show_probs(modes, state):
-    print(get_probs(modes, state))
-
-def postselect(parameters, cutoff, trials):
-    for i in trials:
+def postselect(parameters, theshold, trials):
+    for i in range(trials):
         circuit = RandomCircuit(*parameters)
-        state = circuit.boson_sampling()
-        peak = max(get_probs(modes, state))
-        cnt = 0
-        if peak > cutoff:
-            # can consider many things here,
-            # what proportion of random circuits are peaked (should be rare)
-            # criteria for change in circuit structure:
-            # if identify stark contrast in circuit structure at time t, measure operator norm between the two parts to see if its a trivial inverse
-            cnt += 1
-    return cnt/trials
+        circuit.boson_sampling(theshold)
+        # can consider many things here,
+        # what proportion of random circuits are peaked (should be rare)
+        # criteria for change in circuit structure:
+        # if identify stark contrast in circuit structure at time t, measure operator norm between the two parts to see if its a trivial inverse
 
 
 def order(probs):
@@ -252,11 +264,10 @@ def print_distributions(parameters, n, cft, steps):
     rqc = circuit.boson_sampling()
     r_axes = order(rqc.all_fock_probs())
     idn = {'random layers': r_axes}
-    for i in range(1,n+1):
-        pqc = circuit.boson_sampling_with_SGD(rqc.ket(), (i,n))
-        p_axes = order(pqc.all_fock_probs())
-        idn[f"random + $\\frac{{{i}}}{{{n}}}m$ peaking layers"] = p_axes
-    
+    # for i in range(1,n+1):
+    #     pqc = circuit.boson_sampling_with_SGD(rqc.ket(), (i,n))
+    #     p_axes = order(pqc.all_fock_probs())
+    #     idn[f"random + $\\frac{{{i}}}{{{n}}}m$ peaking layers"] = p_axes
     for label, data in idn.items():
         x, y = data
         pchip = PchipInterpolator(x, y) # nonnegative cubic interpolator
@@ -266,11 +277,11 @@ def print_distributions(parameters, n, cft, steps):
         ax.scatter(x, y, marker="^", color=color)
         l.append(ax.plot(x_smooth, y_smooth, color=color, label=label)[0])
         plt.ylim(0, 1)
-        # l.append(ax.plot(*data, color=next(cc), marker="^", label=label)[0])
-
+        # l.append(ax.plot(*data, color=next(cc1), marker="^", label=label)[0])
 
     ax.set_xlabel("single-photon modes", fontsize=10)
     str = "state learning" if cft==1 else "amplitude maximization"
+    network = parameters[3]
     ax.set_title(f"Output weight {str} ({network})", fontsize=11)
     legend = ax.legend(l, idn.keys(), loc="upper right", frameon=True)
     
@@ -304,7 +315,6 @@ def decay_with_system_size(parameters, shots):
     peaks = []
     R = range(1, modes+1)
     for mode in R:
-        print("\t",mode)
         a = avg_peak_weight(*parameters, shots)
         peaks.append(a[0])
     return (R, peaks)
@@ -326,7 +336,6 @@ def depth_variation(parameters, shots):
     peaks = []
     R = range(1,depth+1)
     for depth in R:
-        print(depth)
         peak = avg_peak_weight(*parameters, shots)[0]
         peaks.append(peak)
     return (R, peaks)
@@ -352,18 +361,15 @@ def print_variation(parameters):
 
 modes = 5
 depth = 40
-networks=["brickwall", 'haar-random']
+network ='brickwall'
 n = 8
-cfts = [1,2]
+cft = 1
 steps = 50
-for c in cfts:
-    for network in networks:
-        parameters = (modes, depth, network)
-        # boson_sampling(*parameters)
-        print_distributions(parameters, n, c, steps)
-# postselect(parameters)
-
-
+theshold=0.7
+trials = 100
+parameters = (modes, depth, network)
+# print_distributions(parameters, n, c, steps)
+postselect(parameters, theshold, trials)
 
 """
 
