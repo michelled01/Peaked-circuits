@@ -1,34 +1,19 @@
-import strawberryfields as sf
-from strawberryfields.ops import Dgate
 import matplotlib.pyplot as plt
-import numpy as np
+from matplotlib.lines import Line2D
 
-# Initialize engine and program
-eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": 20})
-prog = sf.Program(1)
+# Create a figure
+fig, ax = plt.subplots()
 
-alpha = 1.0  # Displacement parameter (coherent amplitude)
+# Example plot lines (just for context)
+ax.plot([0, 1], [0, 1], color="blue", label="Line 1")
+ax.plot([0, 1], [1, 0], color="red", label="Line 2")
 
-with prog.context as q:
-    Dgate(alpha) | q[0]
+# Custom legend entry with two colors
+custom_line = [
+    Line2D([0], [0], color="blue", lw=2),
+    Line2D([0], [0], color="red", lw=2)
+]
 
-# Run the program
-print("here")
-result = eng.run(prog)
-print("here!")
-state = result.state
-print("here?")
-# Plot Wigner function (phase space distribution)
-x = np.linspace(-5, 5, 100)
-p = np.linspace(-5, 5, 100)
-X, P = np.meshgrid(x, p)
-wigner = state.wigner(0, X, P)
+ax.legend(custom_line, ["Mixed Color Line"])
 
-plt.figure(figsize=(6, 6))
-plt.contourf(X, P, wigner, levels=100, cmap="viridis")
-plt.colorbar(label="Wigner Function")
-plt.xlabel("x (position quadrature)")
-plt.ylabel("p (momentum quadrature)")
-plt.title(f"Wigner Function of Coherent State (|\u03b1|={alpha})")
-plt.grid(True, linestyle='--', alpha=0.6)
 plt.show()
