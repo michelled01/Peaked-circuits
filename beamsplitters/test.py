@@ -13,34 +13,33 @@ from strawberryfields.utils import operation
 import tensorflow as tf
 import time
 
-modes = 5
-prog = sf.Program(modes)
-cutoff = modes + 1
-eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
+def get_probs(state, modes):
+    probs = {}
+    for i in range(modes):
+        basis = tuple(1 if j == i else 0 for j in range(modes))
+        probs[basis] = state.ket()[*basis]
+    return probs
 
+def show_probs(state, modes):
+    probs = get_probs(state, modes)
+    for basis, state in probs.items():
+        print(basis, state)
+
+modes = 2
+prog = sf.Program(modes)
+cutoff = modes
+eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
+    
 ket = np.zeros([cutoff]*modes, dtype=np.float32)
-ket[(1,) + (0,)*(modes-1)] = 1.0 # 1 photon in the first mode so input state is (1,0,...0)
+ket[(0,)*(modes-1) + (1,)] = 1.0 # 1 photon in the first mode so input state is (1,0,...0)
 
 with prog.context as q:
-    start = time.time()
-    sf.ops.Fock(1) | q[0]
-    BSgate(np.random.uniform(0, 2 * np.pi), np.random.uniform(0, 2 * np.pi)) | (q[1], q[1 + 1])
+    sf.ops.Ket(ket )| q
+    BSgate(np.pi/4, np.pi) | (q[0], q[1])
 
 results = eng.run(prog)
-print("Fock(1) time:", time.time() - start)
+state = results.state
+show_probs(state, modes)
+print(state.ket())
 
-
-if eng.run_progs:
-    eng.reset()
-
-prog = sf.Program(modes)
-cutoff = modes + 1
-eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
-
-with prog.context as q:
-    start = time.time()
-    sf.ops.Ket(ket) | q
-    BSgate(np.random.uniform(0, 2 * np.pi), np.random.uniform(0, 2 * np.pi)) | (q[1], q[1 + 1])
-
-results = eng.run(prog)
-print("Ket(ket) time:", time.time() - start)
+# TODO:  measure the expected collision probability, which should be anticoncentrated for random circuits in log depth (https://arxiv.org/abs/2011.12277)

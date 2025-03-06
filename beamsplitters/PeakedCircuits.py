@@ -99,12 +99,12 @@ class RandomCircuit:
     ### Main Sampling Experiments ###
 
     def boson_sampling(self, theshold, sample=False):
-        prog = sf.Program(modes)
-        cutoff = modes + 1
+        prog = sf.Program(self.modes)
+        cutoff = self.modes
         eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
 
-        ket = np.zeros([cutoff]*modes, dtype=np.float32)
-        ket[(1,) + (0,)*(modes-1)] = 1.0 # 1 photon in the first mode so input state is (1,0,...0)
+        ket = np.zeros([cutoff]*self.modes, dtype=np.float32)
+        ket[(1,) + (0,)*(self.modes-1)] = 1.0 # 1 photon in the first mode so input state is (1,0,...0)
         
         with prog.context as q:
             sf.ops.Ket(ket) | q
@@ -124,7 +124,7 @@ class RandomCircuit:
     def boson_sampling_with_SGD(self, target=None, T=None):
         fid_progress = []
         passive_sd = 0.1
-        cutoff = self.modes + 1
+        cutoff = self.modes
         layers = 1 # technically not depth because layers arent parallelized
         t = max(T[0]*(self.modes-1)//T[1],1)
 
@@ -201,7 +201,7 @@ class RandomCircuit:
 
     def run_circuit(self, t, opt_params):
         layers, _ = len(opt_params), len(opt_params[0])
-        cutoff = self.modes + 1
+        cutoff = self.modes
 
         final_prog = sf.Program(self.modes)
         eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": cutoff})
