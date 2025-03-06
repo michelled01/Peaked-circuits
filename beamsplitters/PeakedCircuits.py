@@ -11,8 +11,10 @@ import seaborn as sns
 import strawberryfields as sf
 from strawberryfields.ops import *
 from strawberryfields.utils import operation
+from scipy.stats import entropy
 import sys
 import tensorflow as tf
+import os
 
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -21,7 +23,10 @@ cc2 = itertools.cycle(sns.color_palette("mako", 10))
 plt.rcParams["font.family"] = "Cambria"
 
 
+
 class RandomCircuit:
+    fig_ctr = 0
+    
     def __init__(self, modes, depth, network, cost_function_type=1, steps=50, learning_rate=0.1):
         self.modes = modes
         self.depth = depth
@@ -30,6 +35,9 @@ class RandomCircuit:
         self.cft = cost_function_type 
         self.steps = steps
         self.learning_rate = learning_rate
+        self.gate_seq = []
+        self.collision_probs = []
+        self.shannon_entropies = []
 
     ### Layer Initializations ###
 
@@ -46,28 +54,32 @@ class RandomCircuit:
 
     def apply_layer(self, q):
         if self.network == 'haar-random':
-            Interferometer(self.params) | q
+            Interferometer(self.params), q
         elif self.network == 'brickwall':
             self._apply_brickwall(q)
         elif self.network == 'pollman':
             self._apply_pollman(q)
         else:
-            Rgate(0) | q[0]
+            Rgate(0), q[0]
         return q
 
     def _apply_brickwall(self, q):
         for i in range(self.depth):
             for j in range(i%2!=0, self.modes-1, 2):
-                BSgate(self.params[i, j], self.params[i, j+1]) | (q[j], q[j + 1])
-
+                self._apply_gate(q, self.params[i, j], self.params[i, j+1], j, j+1)
+                
     def _apply_pollman(self, q):
         for i in range(self.depth):
             if i % 2 == 0:
                 for j in range(self.modes - 1):
-                    BSgate(self.params[i, j], self.params[i, j+1]) | (q[j], q[j + 1])
-            else:
-                for j in range(self.modes):
-                    Rgate(self.params[i, j]) | q[j]
+                    self._apply_gate(q, self.params[i, j], self.params[i, j+1], j, j+1)
+            # else:
+            #     for j in range(self.modes):
+            #         self._apply_gate(Rgate(self.params[i, j]), q, j)
+
+    def _apply_gate(self,  q, theta, phi, i, j):
+        BSgate(theta, phi) | (q[i], q[j])
+        self.gate_seq.append((theta, phi, i, j))
 
     ### Utilities ###
 
@@ -80,6 +92,9 @@ class RandomCircuit:
 
     def show_probs(self, state):
         print(self.get_probs(state))
+
+    def CP(self, probs):
+        return np.sum(probs ** 2)
 
     def dump_output(self, prog, state):
         old_stdout = sys.stdout
@@ -95,6 +110,55 @@ class RandomCircuit:
         filtered_output = "\n".join(lines)
         with open("outfile.txt", "a") as f:
             f.write(filtered_output)
+
+    def replay(self):
+        eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
+
+        ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
+        ket[(1,) + (0,)*(self.modes-1)] = 1.0
+
+        for t in range(len(self.gate_seq)):
+            rprog = sf.Program(self.modes)
+            with rprog.context as q:
+                sf.ops.Ket(ket) | q
+                for self.depth, (theta, phi, i, j) in enumerate(self.gate_seq[:t], 1):
+                    BSgate(theta, phi) | (q[i], q[j])
+                state = eng.run(rprog).state
+                state = eng.run(rprog).state
+                probs = state.all_fock_probs().flatten()
+                self.collision_probs.append(np.sum(probs ** 2))
+                self.shannon_entropies.append(entropy(probs, base=2))
+
+        self.save_fig()
+
+    def save_fig(self):
+        output_dir = 'beamsplitters/results/figs'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(range(1, len(self.collision_probs) + 1), self.collision_probs, marker='o', label="Collision Probability")
+        plt.xlabel("Circuit Depth")
+        plt.ylabel("Collision Probability")
+        plt.title("Collision Probability Over Time")
+        plt.grid()
+        plt.legend()
+
+        plt.subplot(1, 2, 2)
+        plt.plot(range(1, len(self.shannon_entropies) + 1), self.shannon_entropies, marker='s', color='r', label="Shannon Entropy")
+        plt.xlabel("Circuit Depth")
+        plt.ylabel("Shannon Entropy")
+        plt.title("Entropy Over Time")
+        plt.grid()
+        plt.legend()
+
+        plt.tight_layout()
+        # plt.show()
+
+        plt.savefig(os.path.join(output_dir, f'Cp and entropy{RandomCircuit.fig_ctr}.png'))
+        RandomCircuit.fig_ctr += 1
+        print(RandomCircuit.fig_ctr)
 
     ### Main Sampling Experiments ###
 
@@ -117,8 +181,10 @@ class RandomCircuit:
                 return samples
         results = eng.run(prog)
         state = results.state
+        eng.reset()
         if max(self.get_probs(state)) > theshold:
             self.dump_output(prog, state)
+            self.replay()
         return state
 
     def boson_sampling_with_SGD(self, target=None, T=None):
@@ -366,7 +432,7 @@ n = 8
 cft = 1
 steps = 50
 theshold=0.7
-trials = 100
+trials = 500
 parameters = (modes, depth, network)
 # print_distributions(parameters, n, c, steps)
 postselect(parameters, theshold, trials)
