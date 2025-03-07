@@ -23,11 +23,10 @@ cc2 = itertools.cycle(sns.color_palette("mako", 10))
 plt.rcParams["font.family"] = "Cambria"
 
 
-
 class RandomCircuit:
     fig_ctr = 0
     
-    def __init__(self, modes, depth, network, cost_function_type=1, steps=50, learning_rate=0.1):
+    def __init__(self, modes, depth, network, cost_function_type=1, steps=50, learning_rate=0.1, theshold=0.7):
         self.modes = modes
         self.depth = depth
         self.network = network
@@ -35,6 +34,9 @@ class RandomCircuit:
         self.cft = cost_function_type 
         self.steps = steps
         self.learning_rate = learning_rate
+        self.theshold = theshold
+        self.ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
+        self.ket[(1,) + (0,)*(modes-1)] = 1.0 # 1 photon in first mode
         self.gate_seq = []
         self.collision_probs = []
         self.shannon_entropies = []
@@ -52,34 +54,40 @@ class RandomCircuit:
         else:
             return np.random.uniform(0, 2 * np.pi, (self.depth, self.modes))
 
-    def apply_layer(self, q):
+    def apply_layer(self, q, record_gate_seq):
         if self.network == 'haar-random':
             Interferometer(self.params), q
         elif self.network == 'brickwall':
-            self._apply_brickwall(q)
+            self._apply_brickwall(q, record_gate_seq)
         elif self.network == 'pollman':
-            self._apply_pollman(q)
+            self._apply_pollman(q, record_gate_seq)
         else:
             Rgate(0), q[0]
         return q
 
-    def _apply_brickwall(self, q):
+    def _apply_brickwall(self, q, record_gate_seq):
         for i in range(self.depth):
             for j in range(i%2!=0, self.modes-1, 2):
-                self._apply_gate(q, self.params[i, j], self.params[i, j+1], j, j+1)
-                
-    def _apply_pollman(self, q):
+                self._apply_gate(q, self.params[i, j], self.params[i, j+1], j, j+1, False, record_gate_seq)
+                # BSgate(self.params[i, j], self.params[i, j+1]) | (q[j], q[j+1])
+
+    def _apply_pollman(self, q, record_gate_seq):
         for i in range(self.depth):
             if i % 2 == 0:
                 for j in range(self.modes - 1):
-                    self._apply_gate(q, self.params[i, j], self.params[i, j+1], j, j+1)
+                    self._apply_gate(q, self.params[i, j], self.params[i, j+1], j, j+1, False, record_gate_seq)
+                    # BSgate(self.params[i, j], self.params[i, j+1]) | (q[j], q[j+1])
             # else:
             #     for j in range(self.modes):
             #         self._apply_gate(Rgate(self.params[i, j]), q, j)
 
-    def _apply_gate(self,  q, theta, phi, i, j):
-        BSgate(theta, phi) | (q[i], q[j])
-        self.gate_seq.append((theta, phi, i, j))
+    def _apply_gate(self, q, theta, phi, i, j, inverse, record_gate_seq):
+        if inverse == True:
+            BSgate(theta, phi).H | (q[i], q[j])
+        else:
+            BSgate(theta, phi) | (q[i], q[j])
+        if record_gate_seq:
+            self.gate_seq.append((theta, phi, i, j, inverse))
 
     ### Utilities ###
 
@@ -88,7 +96,7 @@ class RandomCircuit:
         for i in range(self.modes):
             basis = tuple(1 if j == i else 0 for j in range(self.modes))
             probs.append(state.fock_prob(basis))
-        return probs
+        return np.array(probs)
 
     def show_probs(self, state):
         print(self.get_probs(state))
@@ -112,23 +120,27 @@ class RandomCircuit:
             f.write(filtered_output)
 
     def replay(self):
-        eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
+        self.collision_probs = []
+        self.shannon_entropies = []
+        for t in range(-1, len(self.gate_seq)):
+            prog = sf.Program(self.modes)
+            eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
 
-        ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
-        ket[(1,) + (0,)*(self.modes-1)] = 1.0
-
-        for t in range(len(self.gate_seq)):
-            rprog = sf.Program(self.modes)
-            with rprog.context as q:
-                sf.ops.Ket(ket) | q
-                for self.depth, (theta, phi, i, j) in enumerate(self.gate_seq[:t], 1):
-                    BSgate(theta, phi) | (q[i], q[j])
-                state = eng.run(rprog).state
-                state = eng.run(rprog).state
-                probs = state.all_fock_probs().flatten()
+            with prog.context as q:
+                sf.ops.Ket(self.ket) | q
+                for (theta, phi, i, j, inv) in self.gate_seq[:t+1]:
+                    if inv:
+                        BSgate(theta, phi).H | (q[i], q[j])
+                    else:
+                        BSgate(theta, phi) | (q[i], q[j])
+                state = eng.run(prog).state
+                eng.reset()
+                probs = self.get_probs(state)
+                self.show_probs(state)
                 self.collision_probs.append(np.sum(probs ** 2))
                 self.shannon_entropies.append(entropy(probs, base=2))
 
+        self.dump_output(prog, state)
         self.save_fig()
 
     def save_fig(self):
@@ -154,7 +166,7 @@ class RandomCircuit:
         plt.legend()
 
         plt.tight_layout()
-        # plt.show()
+        plt.show()
 
         plt.savefig(os.path.join(output_dir, f'Cp and entropy{RandomCircuit.fig_ctr}.png'))
         RandomCircuit.fig_ctr += 1
@@ -162,39 +174,31 @@ class RandomCircuit:
 
     ### Main Sampling Experiments ###
 
-    def boson_sampling(self, theshold, sample=False):
+    def boson_sampling(self, sample=False, record_gate_seq=False):
         prog = sf.Program(self.modes)
-        cutoff = self.modes
-        eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
+        eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
 
-        ket = np.zeros([cutoff]*self.modes, dtype=np.float32)
-        ket[(1,) + (0,)*(self.modes-1)] = 1.0 # 1 photon in the first mode so input state is (1,0,...0)
-        
         with prog.context as q:
-            sf.ops.Ket(ket) | q
-            self.apply_layer(q)
+            sf.ops.Ket(self.ket) | q
+            self.apply_layer(q, record_gate_seq)
             if (sample == True):
                 MeasureFock() | q
-                eng = sf.Engine("fock", backend_options={"cutoff_dim": cutoff})
+                eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
                 results = eng.run(prog, run_options={"shots": 5000})
                 samples = results.samples
                 return samples
         results = eng.run(prog)
         state = results.state
         eng.reset()
-        if max(self.get_probs(state)) > theshold:
-            self.dump_output(prog, state)
-            self.replay()
         return state
 
-    def boson_sampling_with_SGD(self, target=None, T=None):
+    def boson_sampling_with_SGD(self, target=None, T=None, record_gate_seq=True):
         fid_progress = []
         passive_sd = 0.1
-        cutoff = self.modes
         layers = 1 # technically not depth because layers arent parallelized
         t = max(T[0]*(self.modes-1)//T[1],1)
 
-        eng = sf.Engine(backend="tf", backend_options={"cutoff_dim": cutoff})
+        eng = sf.Engine(backend="tf", backend_options={"cutoff_dim": self.modes})
         prog = sf.Program(modes)
 
         bs_theta = tf.random.normal(shape=[layers], stddev=passive_sd) 
@@ -211,11 +215,8 @@ class RandomCircuit:
 
         assert tf_params.shape == weights.shape, f"Shape mismatch: tf_params.shape = {tf_params.shape}, weights.shape = {weights.shape}" # (layers, 2*modes) <-- modes gates so 2*modes paramters
 
-        ket = np.zeros([cutoff] * self.modes, dtype=np.float32)
-        ket[(1,) + (0,)*(self.modes-1)] = 1.0
-
         with prog.context as q:
-            sf.ops.Ket(ket) | q
+            sf.ops.Ket(self.ket) | q
             # if optimizing the amplitude we need the original circuit
             if self.cft == 2: 
                 self.apply_layer(q)
@@ -263,16 +264,16 @@ class RandomCircuit:
             print("Rep: {} Cost: {:.4f} Fidelity: {:.4f}".format(step, loss, fid))
 
         optimized_parameters = np.array([p.numpy() for p in weights]).tolist()
-        return self.run_circuit(t, optimized_parameters)
+        return self.run_circuit(t, optimized_parameters, record_gate_seq)
 
-    def run_circuit(self, t, opt_params):
+
+    def run_circuit(self, t, opt_params, record_gate_seq):
         layers, _ = len(opt_params), len(opt_params[0])
-        cutoff = self.modes
 
         final_prog = sf.Program(self.modes)
-        eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": cutoff})
+        eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": self.modes})
 
-        ket = np.zeros([cutoff] * self.modes, dtype=np.float32)
+        ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
         ket[(1,) + (0,)*(modes-1)] = 1.0
         gates = []
         if self.cft == 1:
@@ -285,28 +286,29 @@ class RandomCircuit:
             gates = opt_params
 
         with final_prog.context as q:
-            sf.ops.Ket(ket) | q
-            # layers(q, modes, depth, network)
-            self.apply_layer(q)
+            sf.ops.Ket(self.ket) | q
+            self.apply_layer(q, record_gate_seq)
             for l in range(layers):
                 for i in range(t):
                     if self.cft == 1:
-                        BSgate(gates[l][2*i], gates[l][2*i+1]).H | (q[0], q[t-i])
+                        self._apply_gate(q, gates[l][2*i], gates[l][2*i+1], 0, t-i, inverse=True, record_gate_seq=True)
+                        # BSgate(gates[l][2*i], gates[l][2*i+1]).H | (q[0], q[t-i])
                     else:
-                        BSgate(gates[l][2*i], gates[l][2*i+1]) | (q[0], q[i+1])
-        # final_prog.print()
+                        self._apply_gate(q, gates[l][2*i], gates[l][2*i+1], 0, i+1, record_gate_seq=True)
+                        # BSgate(gates[l][2*i], gates[l][2*i+1]) | (q[0], q[i+1])
         state = eng.run(final_prog).state
+        print("probs after running",self.get_probs(state))
         return state
 
 
 def postselect(parameters, theshold, trials):
-    for i in range(trials):
+    for _ in range(trials):
         circuit = RandomCircuit(*parameters)
         circuit.boson_sampling(theshold)
         # can consider many things here,
         # what proportion of random circuits are peaked (should be rare)
         # criteria for change in circuit structure:
-        # if identify stark contrast in circuit structure at time t, measure operator norm between the two parts to see if its a trivial inverse
+        # if identify stark contrast in circuit structure at time t, measure operator norm between two different parts to see if its a trivial inverse
 
 
 def order(probs):
@@ -330,10 +332,10 @@ def print_distributions(parameters, n, cft, steps):
     rqc = circuit.boson_sampling()
     r_axes = order(rqc.all_fock_probs())
     idn = {'random layers': r_axes}
-    # for i in range(1,n+1):
-    #     pqc = circuit.boson_sampling_with_SGD(rqc.ket(), (i,n))
-    #     p_axes = order(pqc.all_fock_probs())
-    #     idn[f"random + $\\frac{{{i}}}{{{n}}}m$ peaking layers"] = p_axes
+    for i in range(1,n+1):
+        pqc = circuit.boson_sampling_with_SGD(rqc.ket(), (i,n))
+        p_axes = order(pqc.all_fock_probs())
+        idn[f"random + $\\frac{{{i}}}{{{n}}}m$ peaking layers"] = p_axes
     for label, data in idn.items():
         x, y = data
         pchip = PchipInterpolator(x, y) # nonnegative cubic interpolator
@@ -347,7 +349,7 @@ def print_distributions(parameters, n, cft, steps):
 
     ax.set_xlabel("single-photon modes", fontsize=10)
     str = "state learning" if cft==1 else "amplitude maximization"
-    network = parameters[3]
+    network = parameters[2]
     ax.set_title(f"Output weight {str} ({network})", fontsize=11)
     legend = ax.legend(l, idn.keys(), loc="upper right", frameon=True)
     
@@ -427,18 +429,23 @@ def print_variation(parameters):
 
 modes = 5
 depth = 40
-network ='brickwall'
+network = 'brickwall'
 n = 8
 cft = 1
 steps = 50
-theshold=0.7
-trials = 500
+theshold=0
+trials = 1000
 parameters = (modes, depth, network)
-# print_distributions(parameters, n, c, steps)
+# print_distributions(parameters, n, cft, steps)
 postselect(parameters, theshold, trials)
+# circuit = RandomCircuit(modes=modes, depth=depth, network=network, cost_function_type=cft, steps=steps, theshold=theshold)
+# target = circuit.boson_sampling(record_gate_seq=False).ket()
+# state = circuit.boson_sampling_with_SGD(target, (n,n), record_gate_seq=True)
+# if max(circuit.get_probs(state)) > theshold:
+#     circuit.replay()
+
 
 """
-
 # with open('outputfile', 'w') as sys.stdout:
 for seed in range(1):
     random.seed(42)

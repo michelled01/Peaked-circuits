@@ -39,7 +39,7 @@ with prog.context as q:
 
 results = eng.run(prog)
 state = results.state
-show_probs(state, modes)
+print(state)
+a = state.all_fock_probs().flatten()
+print(a)#show_probs(state, modes)
 print(state.ket())
-
-# TODO:  measure the expected collision probability, which should be anticoncentrated for random circuits in log depth (https://arxiv.org/abs/2011.12277)
