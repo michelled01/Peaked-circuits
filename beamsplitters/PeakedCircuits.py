@@ -20,6 +20,7 @@ np.random.seed(42)
 tf.random.set_seed(42)
 cc1 = itertools.cycle(sns.color_palette("rocket",10))
 cc2 = itertools.cycle(sns.color_palette("mako", 10))
+cc3 = itertools.cycle(sns.cubehelix_palette(8))
 plt.rcParams["font.family"] = "Cambria"
 
 
@@ -116,7 +117,7 @@ class RandomCircuit:
                 continue
             lines.append(line)
         filtered_output = "\n".join(lines)
-        with open("outfile.txt", "a") as f:
+        with open("outfile.txt", "w") as f:
             f.write(filtered_output)
 
     def replay(self):
@@ -125,7 +126,6 @@ class RandomCircuit:
         for t in range(-1, len(self.gate_seq)):
             prog = sf.Program(self.modes)
             eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
-
             with prog.context as q:
                 sf.ops.Ket(self.ket) | q
                 for (theta, phi, i, j, inv) in self.gate_seq[:t+1]:
@@ -133,42 +133,54 @@ class RandomCircuit:
                         BSgate(theta, phi).H | (q[i], q[j])
                     else:
                         BSgate(theta, phi) | (q[i], q[j])
-                state = eng.run(prog).state
-                eng.reset()
-                probs = self.get_probs(state)
-                self.show_probs(state)
-                self.collision_probs.append(np.sum(probs ** 2))
-                self.shannon_entropies.append(entropy(probs, base=2))
-
-        self.dump_output(prog, state)
+            state = eng.run(prog).state
+            eng.reset()
+            probs = self.get_probs(state)
+            # self.show_probs(state)
+            self.collision_probs.append(np.sum(probs ** 2))
+            self.shannon_entropies.append(entropy(probs, base=2))
         self.save_fig()
 
-    def save_fig(self):
+    def save_fig(self, overlay_data=None):
         output_dir = 'beamsplitters/results/figs'
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
 
-        plt.figure(figsize=(10, 5))
-        plt.subplot(1, 2, 1)
-        plt.plot(range(1, len(self.collision_probs) + 1), self.collision_probs, marker='o', label="Collision Probability")
-        plt.xlabel("Circuit Depth")
-        plt.ylabel("Collision Probability")
-        plt.title("Collision Probability Over Time")
-        plt.grid()
-        plt.legend()
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        cax, eax = axs
+    
+        cax.xaxis.set_major_locator(MultipleLocator(10))
+        cax.set_xlabel("Circuit Depth")
+        cax.set_ylabel("Collision Probability")
+        if overlay_data:
+            for (idx, y_vals, cy_error) in overlay_data["collision_probs"]:
+                color=next(cc3)
+                x_vals = range(1, len(y_vals) + 1)
+                cax.plot(x_vals, y_vals, linestyle='-', color=color, label=f"$\\delta={{{idx}}}$")
+                (_, caps, _) = cax.errorbar(x_vals, y_vals, yerr=cy_error, color=color, fmt='^', markersize=8, capsize=20)
+                for cap in caps: cap.set_markeredgewidth(.3)
+        else:
+            cax.plot(range(1, len(self.collision_probs) + 1), self.collision_probs, marker='o', label="Collision Probability")
+        cax.legend()
+   
+        eax.xaxis.set_major_locator(MultipleLocator(10))
+        eax.set_xlabel("Circuit Depth")
+        eax.set_ylabel("Shannon Entropy")
+        if overlay_data:
+            for (idx, y_vals, ey_error) in overlay_data["shannon_entropies"]:
+                color=next(cc3)
+                x_vals = range(1, len(y_vals) + 1)
+                eax.plot(x_vals, y_vals, linestyle='-', color=color, label=f"$\\delta={{{idx}}}$")
+                (_, caps, _) = eax.errorbar(x_vals, y_vals, yerr=ey_error, color=color, fmt='^', markersize=8, capsize=20)
+                for cap in caps: cap.set_markeredgewidth(.3)
 
-        plt.subplot(1, 2, 2)
-        plt.plot(range(1, len(self.shannon_entropies) + 1), self.shannon_entropies, marker='s', color='r', label="Shannon Entropy")
-        plt.xlabel("Circuit Depth")
-        plt.ylabel("Shannon Entropy")
-        plt.title("Entropy Over Time")
-        plt.grid()
-        plt.legend()
+                # eax.plot(range(1, len(data) + 1), data, linestyle='-', color=color, label=f"$\\delta={{{idx}}}$")
+        else:
+            eax.plot(range(1, len(self.collision_probs) + 1), self.collision_probs, marker='o', label="Shannon Entropy")
+        eax.legend()
 
         plt.tight_layout()
-        plt.show()
-
         plt.savefig(os.path.join(output_dir, f'Cp and entropy{RandomCircuit.fig_ctr}.png'))
+        plt.show()
         RandomCircuit.fig_ctr += 1
         print(RandomCircuit.fig_ctr)
 
@@ -189,7 +201,9 @@ class RandomCircuit:
                 return samples
         results = eng.run(prog)
         state = results.state
-        eng.reset()
+        # if record_gate_seq and max(self.get_probs(state)) > self.theshold:
+        #     self.dump_output(prog, state)
+        #     self.replay()
         return state
 
     def boson_sampling_with_SGD(self, target=None, T=None, record_gate_seq=True):
@@ -297,18 +311,74 @@ class RandomCircuit:
                         self._apply_gate(q, gates[l][2*i], gates[l][2*i+1], 0, i+1, record_gate_seq=True)
                         # BSgate(gates[l][2*i], gates[l][2*i+1]) | (q[0], q[i+1])
         state = eng.run(final_prog).state
-        print("probs after running",self.get_probs(state))
+        if record_gate_seq and max(self.get_probs(state)) > self.theshold:
+            self.dump_output(final_prog, state)
+            self.replay()
+        eng.reset()
         return state
 
 
-def postselect(parameters, theshold, trials):
-    for _ in range(trials):
-        circuit = RandomCircuit(*parameters)
-        circuit.boson_sampling(theshold)
-        # can consider many things here,
-        # what proportion of random circuits are peaked (should be rare)
-        # criteria for change in circuit structure:
-        # if identify stark contrast in circuit structure at time t, measure operator norm between two different parts to see if its a trivial inverse
+def postselect(parameters, trials):
+    modes, depth, network = parameters[:3]
+    
+    overlay_data = {"collision_probs": [], "shannon_entropies": []}
+
+    for t in np.linspace(0, 0.5, 3):
+        avg_probs = {}
+        min_cps = [np.ones(modes) for _ in range(depth)]
+        max_cps = [np.zeros(modes) for _ in range(depth)]
+        min_entropies = [np.ones(modes) for _ in range(depth)]
+        max_entropies = [np.zeros(modes) for _ in range(depth)]
+        for d in range(depth):
+            ctr = 0
+            print("depth",d)
+            min_cp = 1
+            max_cp = 0
+            min_entropy = modes
+            max_entropy = 0
+            while ctr < trials:
+                circuit = RandomCircuit(modes, d, network, *parameters[3:])
+                state = circuit.boson_sampling(record_gate_seq=False)
+                probs = circuit.get_probs(state)
+                if max(probs) > t:
+                    min_cp = min(min_cp, np.sum(probs ** 2))
+                    max_cp = max(max_cp, np.sum(probs ** 2))
+                    min_entropy = min(min_entropy, entropy(probs, base=2))
+                    max_entropy = max(min_entropy, entropy(probs, base=2))
+                    if d not in avg_probs:
+                        avg_probs[d] = probs
+                    else:
+                        avg_probs[d] += probs
+                    ctr += 1
+            min_cps[d] = min_cp
+            max_cps[d] = max_cp
+            min_entropies[d] = min_entropy
+            max_entropies[d] = max_entropy
+
+        for k, prob in avg_probs.items():
+            avg_probs[k] = prob / trials
+            assert 0 <= all(avg_probs[k]) <= 1
+
+        collision_probs = [np.sum(avg_probs[d] ** 2) for d in range(depth)]
+        shannon_entropies = [entropy(avg_probs[d], base=2) for d in range(depth)]
+
+        if t==0: print("entropies",shannon_entropies) 
+        if t==0: print("min_entropies",min_entropies) 
+        if t==0: print("max_entropies",max_entropies) 
+        cy_error = [max(abs(collision_probs[d]-min_cps[d]), abs(min_cps[d] - collision_probs[d])) for d in range(depth)]
+        ey_error = [max(abs(shannon_entropies[d]-min_entropies[d]), abs(max_entropies[d] - shannon_entropies[d])) for d in range(depth)]
+
+        overlay_data['collision_probs'].append((t,collision_probs, cy_error))
+        overlay_data['shannon_entropies'].append((t,shannon_entropies, ey_error))
+        if t==0:
+            print("cy_error", cy_error)
+            print("ey_error", ey_error)
+    circuit = RandomCircuit(*parameters)
+    circuit.save_fig(overlay_data)
+            # can consider many things here,
+            # what proportion of random circuits are peaked (should be rare)
+            # criteria for change in circuit structure:
+            # if identify stark contrast in circuit structure at time t, measure operator norm between two different parts to see if its a trivial inverse
 
 
 def order(probs):
@@ -428,22 +498,24 @@ def print_variation(parameters):
     ax.add_artist(legend)
 
 modes = 5
-depth = 40
+depth = 20
 network = 'brickwall'
 n = 8
 cft = 1
-steps = 50
-theshold=0
-trials = 1000
-parameters = (modes, depth, network)
-# print_distributions(parameters, n, cft, steps)
-postselect(parameters, theshold, trials)
+steps = 100
+theshold = 0
+trials = 50
+record_gate_seq = True # set to True if running boson_sampling graph ONLY
+parameters = (modes, depth, network, cft, steps, 0.1, theshold)
+parameter = (modes, depth, network)
+# print_distributions(parameter, n, cft, steps)
+postselect(parameters,trials)
+# circuit.boson_sampling_with_SGD(target=a, T=(8,8), record_gate_seq=True)
 # circuit = RandomCircuit(modes=modes, depth=depth, network=network, cost_function_type=cft, steps=steps, theshold=theshold)
 # target = circuit.boson_sampling(record_gate_seq=False).ket()
 # state = circuit.boson_sampling_with_SGD(target, (n,n), record_gate_seq=True)
 # if max(circuit.get_probs(state)) > theshold:
 #     circuit.replay()
-
 
 """
 # with open('outputfile', 'w') as sys.stdout:
