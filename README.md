@@ -1,14 +1,10 @@
-# Peaked-circuits
+# Peaked-boson-sampling
 
 
 
 ---
-Over a decade after its proposal, the idea of using quantum computers to sample hard distributions has remained a key path to demonstrating quantum advantage. Yet a severe drawback remains: verification seems to require exponential classical computation. As an attempt to overcome this difficulty, we propose a new candidate for quantum advantage experiments with otherwise-random ''peaked circuits'', i.e., quantum circuits whose outputs have high concentrations on a computational basis state. Naturally, the heavy output string can be used for classical verification. 
-    
-In this work, we analytically and numerically study an explicit construction of peaked circuits by attaching random quantum circuits (RQCs) with parametrized quantum circuits (PQCs). If the trend in our 
-    result persists, at system size n = 50 and circuit depth n, we would be able to generate an average peak weight of 0.05% by attaching a highly scrambled circuit, whose gate count is half of the RQC, to the 
-    RQC layers. This means the peaked circuits we found could serve as a potential candidate for future verifiable quantum advantage experiments.
+The use of randomness in quantum circuits is an intrinsically interesting property due to the model's convergence to the hard-to-simulate Haar measure. While random circuit sampling is both promising for quantum advantage and realistically implementable on a NISQ device, it is not yet efficiently verifiable. Previous work in studying peaked random circuit sampling models has shown optimism for a potentially viable model [[1]](#1). In this paper, we extend those observations by studying a simpler, alternative model to quantum computation involving beamsplitter networks. We present numerical and theoretical findings on the structure of peaked beamsplitter networks and evaluate their potential as a candidate for quantum advantage experiments.
 
-Publication: arxiv:2404.14493 
-
+## References
+<a id="1">[1]</a> https://github.com/yuxuanzhang1995/Peaked-circuits
 ---
