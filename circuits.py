@@ -148,6 +148,14 @@ def norm_f(psi):
     # 'mgs' is a manual modified gram-schmidt orthog routine
     return psi.isometrize(method='mgs',allow_no_left_inds=True)
 
+def all_weights(L =10,depth = 100, shots=100):
+    all_weights = []
+    for i in range (shots):
+        psi_2 = qmps_f(L, in_depth=depth, n_Qbit=L-1, qmps_structure="brickwall", canon="left",  n_q_mera=2, seed_init=10, internal_mera="brickwall")
+        weights = np.sort(abs((psi_2^all).data.reshape(2**L))**2)[::-1]
+        all_weights.append(weights)
+    return np.mean(np.array(all_weights), axis=0)
+
 def average_peak_weight(L =10,depth = 100, shots=100):
     peak = []
     for i in range (shots):
@@ -156,5 +164,4 @@ def average_peak_weight(L =10,depth = 100, shots=100):
     return np.mean(peak), np.std(peak)/np.sqrt(shots), np.max(peak)
 def negative_overlap(psi, target):
     return - abs((target.H & psi)^all) ** 2  # minus so as to minimize
-
 

@@ -36,8 +36,8 @@ class RandomCircuit:
         self.steps = steps
         self.learning_rate = learning_rate
         self.theshold = theshold
-        self.ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
-        self.ket[(1,) + (0,)*(modes-1)] = 1.0 # 1 photon in first mode
+        # self.ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
+        # self.ket[(1,) + (0,)*(modes-1)] = 1.0 # 1 photon in first mode
         self.gate_seq = []
         self.collision_probs = []
         self.shannon_entropies = []
@@ -57,7 +57,7 @@ class RandomCircuit:
 
     def apply_layer(self, q, record_gate_seq):
         if self.network == 'haar-random':
-            Interferometer(self.params), q
+            Interferometer(self.params) | q
         elif self.network == 'brickwall':
             self._apply_brickwall(q, record_gate_seq)
         elif self.network == 'pollman':
@@ -125,9 +125,10 @@ class RandomCircuit:
         self.shannon_entropies = []
         for t in range(-1, len(self.gate_seq)):
             prog = sf.Program(self.modes)
-            eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
+            eng = sf.Engine("fock", backend_options={"cutoff_dim": 2})
             with prog.context as q:
-                sf.ops.Ket(self.ket) | q
+                # sf.ops.Ket(self.ket) | q
+                Fock(1) | q[0]
                 for (theta, phi, i, j, inv) in self.gate_seq[:t+1]:
                     if inv:
                         BSgate(theta, phi).H | (q[i], q[j])
@@ -145,47 +146,21 @@ class RandomCircuit:
         output_dir = 'beamsplitters/results/figs'
         os.makedirs(output_dir, exist_ok=True)
 
-        fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-        oax, cax, eax = axs
+        fig, axs = plt.subplots(1, 1, figsize=(15, 5))
+        oax = axs
         global cc3
 
         if overlay_data:
             oax.xaxis.set_major_locator(MultipleLocator(10))
-            oax.set_xlabel("Circuit Depth")
+            oax.set_xlabel("Number of Modes")
             oax.set_ylabel("Output Weight")
-            for (idx, y_vals) in overlay_data["output_weights"]:
+            for (idx, y_vals) in overlay_data:
                 color=next(cc3)
                 x_vals = range(1, len(y_vals) + 1)
                 oax.plot(x_vals, y_vals, linestyle='-', marker="^", color=color, label=f"$\\delta={{{idx}}}$")
             oax.legend()
 
         cc3 = itertools.cycle(sns.cubehelix_palette(8)) 
-
-        cax.xaxis.set_major_locator(MultipleLocator(10))
-        cax.set_xlabel("Circuit Depth")
-        cax.set_ylabel("Collision Probability")
-        if overlay_data:
-            for (idx, y_vals) in overlay_data["collision_probs"]:
-                color=next(cc3)
-                x_vals = range(1, len(y_vals) + 1)
-                cax.plot(x_vals, y_vals, linestyle='-', marker="^", color=color, label=f"$\\delta={{{idx}}}$")
-        else:
-            cax.plot(range(1, len(self.collision_probs) + 1), self.collision_probs, marker='o', label="Collision Probability")
-        cax.legend()
-
-        cc3 = itertools.cycle(sns.cubehelix_palette(8))     
-   
-        eax.xaxis.set_major_locator(MultipleLocator(10))
-        eax.set_xlabel("Circuit Depth")
-        eax.set_ylabel("Shannon Entropy")
-        if overlay_data:
-            for (idx, y_vals,) in overlay_data["shannon_entropies"]:
-                color=next(cc3)
-                x_vals = range(1, len(y_vals) + 1)
-                eax.plot(x_vals, y_vals, linestyle='-', marker="^", color=color, label=f"$\\delta={{{idx}}}$")
-        else:
-            eax.plot(range(1, len(self.collision_probs) + 1), self.collision_probs, marker='o', label="Shannon Entropy")
-        eax.legend()
 
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f'Cp and entropy{RandomCircuit.fig_ctr}.png'))
@@ -197,19 +172,21 @@ class RandomCircuit:
 
     def boson_sampling(self, sample=False, record_gate_seq=False):
         prog = sf.Program(self.modes)
-        eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
+        eng = sf.Engine("fock", backend_options={"cutoff_dim": 2})
 
         with prog.context as q:
-            sf.ops.Ket(self.ket) | q
+            # sf.ops.Ket(self.ket) | q
+            Fock(1) | q[0]
             self.apply_layer(q, record_gate_seq)
             if (sample == True):
                 MeasureFock() | q
-                eng = sf.Engine("fock", backend_options={"cutoff_dim": self.modes})
+                eng = sf.Engine("fock", backend_options={"cutoff_dim": 2})
                 results = eng.run(prog, run_options={"shots": 5000})
                 samples = results.samples
                 return samples
         results = eng.run(prog)
         state = results.state
+        print(self.show_probs(state))
         # if record_gate_seq and max(self.get_probs(state)) > self.theshold:
         #     self.dump_output(prog, state)
         #     self.replay()
@@ -219,9 +196,9 @@ class RandomCircuit:
         fid_progress = []
         passive_sd = 0.1
         layers = 1 # technically not depth because layers arent parallelized
-        t = max(T[0]*(self.modes-1)//T[1],1)
+        t = T
 
-        eng = sf.Engine(backend="tf", backend_options={"cutoff_dim": self.modes})
+        eng = sf.Engine(backend="tf", backend_options={"cutoff_dim": 2})
         prog = sf.Program(modes)
 
         bs_theta = tf.random.normal(shape=[layers], stddev=passive_sd) 
@@ -239,7 +216,8 @@ class RandomCircuit:
         assert tf_params.shape == weights.shape, f"Shape mismatch: tf_params.shape = {tf_params.shape}, weights.shape = {weights.shape}" # (layers, 2*modes) <-- modes gates so 2*modes paramters
 
         with prog.context as q:
-            sf.ops.Ket(self.ket) | q
+            # sf.ops.Ket(self.ket) | q
+            Fock(1) | q[0]
             # if optimizing the amplitude we need the original circuit
             if self.cft == 2: 
                 self.apply_layer(q)
@@ -250,7 +228,6 @@ class RandomCircuit:
 
         # from tensorflow import keras
         # kl = keras.losses.KLDivergence()
-        
         def cost1(weights):
             mapping = {p.name: w for p, w in zip(tf_params.flatten(), tf.reshape(weights, [-1]))}
             state = eng.run(prog, args=mapping).state
@@ -294,7 +271,7 @@ class RandomCircuit:
         layers, _ = len(opt_params), len(opt_params[0])
 
         final_prog = sf.Program(self.modes)
-        eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": self.modes})
+        eng = sf.Engine(backend="fock", backend_options={"cutoff_dim": 2})
 
         ket = np.zeros([self.modes] * self.modes, dtype=np.float32)
         ket[(1,) + (0,)*(modes-1)] = 1.0
@@ -309,7 +286,8 @@ class RandomCircuit:
             gates = opt_params
 
         with final_prog.context as q:
-            sf.ops.Ket(self.ket) | q
+            # sf.ops.Ket(self.ket) | q
+            Fock(1) | q[0]
             self.apply_layer(q, record_gate_seq)
             for l in range(layers):
                 for i in range(t):
@@ -328,48 +306,32 @@ class RandomCircuit:
 
 
 def postselect(parameters, trials):
+    # can consider many things here,
+    # what proportion of random networks are peaked,
+    # if identify stark contrast in circuit structure at time t, measure operator norm between two different parts to see if its a trivial inverse
+
     modes, depth, network = parameters[:3]
+
+    overlay_data = []
+
+    for t in np.linspace(0, 0.5, 2):
+        ord_avg_probs = np.zero(modes)
+        ctr = 0
+        while ctr < trials:
+            circuit = RandomCircuit(*parameters)
+            state = circuit.boson_sampling(record_gate_seq=False)
+            probs = circuit.get_probs(state)
+            ord_probs = np.array(sorted(probs, reverse=True))
+            if max(probs) > t:
+                ord_avg_probs += ord_probs
+                ctr += 1
+
+        ord_avg_probs /= trials
+        assert 0 <= all(ord_avg_probs) <= 1
+        overlay_data.append((t,ord_avg_probs))
     
-    overlay_data = {"output_weights": [], "collision_probs": [], "shannon_entropies": []}
-
-    for t in np.linspace(0, 0.8, 5):
-        avg_probs = {}
-        ord_avg_probs = {}
-        for d in range(depth):
-            ctr = 0
-            print("depth",d)
-            while ctr < trials:
-                circuit = RandomCircuit(modes, d, network, *parameters[3:])
-                state = circuit.boson_sampling(record_gate_seq=False)
-                probs = circuit.get_probs(state)
-                ord_probs = np.array(sorted(probs, reverse=True))
-                if max(probs) > t:
-                    if d not in avg_probs:
-                        avg_probs[d] = probs
-                        ord_avg_probs[d] = ord_probs
-                    else:
-                        avg_probs[d] += probs
-                        ord_avg_probs[d] += ord_probs
-                    ctr += 1
-
-        for d in range(depth):
-            avg_probs[d] = avg_probs[d] / trials
-            ord_avg_probs[d] = ord_avg_probs[d] / trials
-            assert 0 <= all(avg_probs[d]) <= 1
-
-        output_weights = sorted(ord_avg_probs[depth-1], reverse=True) # choose the circuit with maximal depth
-        collision_probs = [np.sum(avg_probs[d] ** 2) for d in range(depth)]
-        shannon_entropies = [entropy(avg_probs[d], base=2) for d in range(depth)]
-
-        overlay_data['output_weights'].append((t,output_weights))
-        overlay_data['collision_probs'].append((t,collision_probs))
-        overlay_data['shannon_entropies'].append((t,shannon_entropies))
     circuit = RandomCircuit(*parameters)
     circuit.save_fig(overlay_data)
-            # can consider many things here,
-            # what proportion of random circuits are peaked (should be rare)
-            # criteria for change in circuit structure:
-            # if identify stark contrast in circuit structure at time t, measure operator norm between two different parts to see if its a trivial inverse
 
 
 def order(probs):
@@ -383,20 +345,27 @@ def order(probs):
     for state, prob in state_probs: 
         print(f"State {state}: {prob:.6f}")
     state_probs.sort(key=lambda x: x[1], reverse=True) # sort probabilities in descending order
+    if len(state_probs) == 0:
+        print("oops, no state probs!")
+        exit()
     return range(1, len(state_probs) + 1), tuple(zip(*state_probs))[1]
 
 def print_distributions(parameters, n, cft, steps):
     ax = plt.figure(figsize=(5, 5)).gca()
     ax.xaxis.set_major_locator(MultipleLocator(1))
     l = []
-    circuit = RandomCircuit(*parameters, cft, steps)
-    rqc = circuit.boson_sampling()
-    r_axes = order(rqc.all_fock_probs())
-    idn = {'random layers': r_axes}
-    for i in range(1,n+1):
-        pqc = circuit.boson_sampling_with_SGD(rqc.ket(), (i,n))
-        p_axes = order(pqc.all_fock_probs())
-        idn[f"random + $\\frac{{{i}}}{{{n}}}m$ peaking layers"] = p_axes
+    x_axis = np.zeros(parameters[0])
+    for i in range(1):
+        circuit = RandomCircuit(*parameters, cft, steps)
+        rqc = circuit.boson_sampling()
+        r_axes = circuit.get_probs(rqc)[::-1]
+        x_axis += r_axes
+    x_axis /= 10
+    idn = {'random layers': (range(1, parameters[0] + 1),x_axis)}
+    # for i in range(1,n+1):
+    #     pqc = circuit.boson_sampling_with_SGD(rqc.ket(), i)
+    #     p_axes = order(pqc.all_fock_probs())
+    #     idn[f"random + $\\frac{{{i}}}{{{n}}}m$ peaking layers"] = p_axes
     for label, data in idn.items():
         x, y = data
         pchip = PchipInterpolator(x, y) # nonnegative cubic interpolator
@@ -405,10 +374,10 @@ def print_distributions(parameters, n, cft, steps):
         color=next(cc1 if cft==1 else cc2)
         ax.scatter(x, y, marker="^", color=color)
         l.append(ax.plot(x_smooth, y_smooth, color=color, label=label)[0])
-        plt.ylim(0, 1)
+        # plt.yscale("log")
         # l.append(ax.plot(*data, color=next(cc1), marker="^", label=label)[0])
 
-    ax.set_xlabel("single-photon modes", fontsize=10)
+    ax.set_xlabel("basis", fontsize=10)
     str = "state learning" if cft==1 else "amplitude maximization"
     network = parameters[2]
     ax.set_title(f"Output weight {str} ({network})", fontsize=11)
@@ -488,22 +457,20 @@ def print_variation(parameters):
     plt.show()
     ax.add_artist(legend)
 
-modes = 8
-depth = 60
-network = 'brickwall'
-n = 8
+modes = 10 # 20 #TODO: do beamsplitter networks follow P.T distribution? (anticoncentrates, shape of permanents, haar-random properties) proof/poselection
+depth = 20
+network = 'haar-random'
+n = modes
 cft = 1
 steps = 100
 theshold = 0
-trials = 100
+trials = 1
 record_gate_seq = True # set to True if running boson_sampling graph ONLY
 parameters = (modes, depth, network, cft, steps, 0.1, theshold)
 parameter = (modes, depth, network)
-# print_distributions(parameter, n, cft, steps)
-postselect(parameters,trials)
-# circuit.boson_sampling_with_SGD(target=a, T=(8,8), record_gate_seq=True)
-# circuit = RandomCircuit(modes=modes, depth=depth, network=network, cost_function_type=cft, steps=steps, theshold=theshold)
-# target = circuit.boson_sampling(record_gate_seq=False).ket()
-# state = circuit.boson_sampling_with_SGD(target, (n,n), record_gate_seq=True)
-# if max(circuit.get_probs(state)) > theshold:
-#     circuit.replay()
+postselect(parameters, trials)
+
+
+# Efficiency concerns:  (prob forget abt this for now)
+# since we just want the overlap, can try optimizing with intermediate contractions @quimb
+# look into SF MPS/tensor network contraction support

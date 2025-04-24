@@ -181,7 +181,8 @@ def uni_list(dic,val_iden=0.,val_dic = 0.): #create the unitary list
 def norm_f(psi):
     # method='qr' is the default but the gradient seems very unstable
     # 'mgs' is a manual modified gram-schmidt orthog routine
-    return psi.unitize(method='mgs',allow_no_left_inds=True)
+    psinorm = psi.unitize(method='mgs',allow_no_left_inds=True)
+    return psinorm
 
 def average_peak_weight(L =10,depth = 100, shots=100):
     peak = []
@@ -200,3 +201,19 @@ def average_peak_weight_Haar(L =10,depth = 100, shots=100):
     return np.mean(peak), np.std(peak)/np.sqrt(shots), np.max(peak)
 def negative_overlap(psi, target):
     return - abs((target.H & psi)^all) ** 2  # minus so as to minimize
+
+def plot(psi_rnd, psi_pkd, n):
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MultipleLocator
+    psi_pkd = np.sort(psi_pkd)[::-1]
+    psi_rnd = np.sort(psi_rnd)[::-1]
+    ax = plt.figure(figsize=(5, 5)).gca()
+    ax.xaxis.set_major_locator(MultipleLocator(1000))
+    plt.plot(range(2**n), psi_rnd, label="Random output weight", color='blue', alpha=0.7)
+    plt.plot(range(2**n), psi_pkd, label="Peaked output weight", color='red', linestyle='dashed', alpha=0.7)
+    plt.xlabel("Bitstring Index")
+    plt.ylabel("Probability")
+    plt.title("output weight")
+    plt.legend()
+    plt.yscale("log")
+    plt.show() 
