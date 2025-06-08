@@ -1,5 +1,4 @@
-# Peaked-boson-sampling
-
+# Peaked-optics
 
 
 ---
